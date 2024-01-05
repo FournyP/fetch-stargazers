@@ -1,76 +1,113 @@
-const createCsvWriter = require('csv-writer').createObjectCsvWriter;
-const fetch = require('node-fetch');
-const prompt = require('prompt');
+const createCsvWriter = require("csv-writer").createObjectCsvWriter;
+const fetch = require("node-fetch");
+const prompt = require("prompt");
+
+let schema = {
+  properties: {
+    token: {
+      hidden: true,
+      required: true,
+    },
+    repositories: {
+      pattern: /^[a-zA-Z/\s-]+$/,
+      message: "Repositories must be only letters, slash, spaces, or dashes",
+      required: true,
+    },
+  },
+};
 
 // Ask for script configuration
 prompt.start();
 
-prompt.get(['username', 'repository', 'token'], function (err, result) {
-  const { username, repository, token } = result;
+prompt.get(schema, async function (err, result) {
+  const { repositories, token } = result;
 
-  fetchStargazers({ username, repository, token });
-});
+  const realRepositories = repositories.trimStart().split(" ");
 
-async function fetchStargazers({ username, repository, token }) {
+  let stargazers = [];
+
+  for (let repository of realRepositories) {
+    console.log(`Fetching stargazers for ${repository}...`);
+    stargazers.push(...(await fetchStargazers({ repository, token })));
+    console.log(`Successfuly fetched stargazer data in ${repository}.csv`);
+  }
+
   const csvWriter = createCsvWriter({
-    path: `${username}-${repository}.csv`,
+    path: "result.csv",
     header: [
-      { id: 'name', title: 'Name' },
-      { id: 'username', title: 'Username' },
-      { id: 'followers', title: 'Followers' }
-    ]
+      { id: "url", title: "url" },
+      { id: "login", title: "login" },
+      { id: "email", title: "email" },
+      { id: "websiteUrl", title: "websiteUrl" },
+      { id: "twitterUsername", title: "twitterUsername" },
+    ],
   });
 
-  let usersFetched = 0;
-  let hasNextPage = true;
+  // Filter out duplicates
+  stargazers = stargazers.filter(
+    (stargazer, index, self) =>
+      index === self.findIndex((t) => t.login === stargazer.login)
+  );
+
+  await csvWriter.writeRecords(stargazers);
+
+  console.log("Done!");
+});
+
+async function fetchStargazers({ repository, token }) {
+  let stargazers = [];
   let endCursor = null;
+  let hasNextPage = true;
 
   while (hasNextPage) {
-    const usersInfo = await getUsersInfo({ username, repository, token, endCursor });
+    const [username, repo] = repository.split("/");
+
+    const usersInfo = await getUsersInfo({
+      username,
+      repo,
+      token,
+      endCursor,
+    });
 
     hasNextPage = usersInfo.hasNextPage;
     endCursor = usersInfo.endCursor;
 
-    await csvWriter.writeRecords(usersInfo.stargazers)
-    usersFetched += usersInfo.stargazers.length;
-    console.log(`Fetched ${usersFetched} users so far!`);
+    stargazers.push(...usersInfo.stargazers);
   }
 
-  console.log(`Successfuly fetched stargazer data in ${username}-${repository}.csv`);
+  return stargazers;
 }
 
-async function getUsersInfo({ username, repository, token, endCursor }) {
+async function getUsersInfo({ username, repo, token, endCursor }) {
   const endCursorForQuery = endCursor ? `"${endCursor}"` : null;
 
   const query = `
   query { 
-    repository(owner:"${username}" name:"${repository}") {
+    repository(owner:"${username}" name:"${repo}") {
       id
-      stargazers(first: 100, after: ${endCursorForQuery} ){
+      stargazers(first: 100, after: ${endCursorForQuery}, orderBy: {field: STARRED_AT, direction:ASC}){
         pageInfo {
           hasNextPage
           endCursor
         }
         edges {
           node {
-            id
+            url
             login
-            name
-            followers {
-              totalCount
-            }
+            email
+            websiteUrl
+            twitterUsername
           }
-          cursor
         }
       }
     }
   }
   `;
 
-  const usersResponse = await fetch('https://api.github.com/graphql', {
-    method: 'POST',
+  const usersResponse = await fetch("https://api.github.com/graphql", {
+    method: "POST",
     headers: {
-      "Authorization": `token ${token}`
+      Authorization: `token ${token}`,
     },
     body: JSON.stringify({ query }),
   });
@@ -83,10 +120,11 @@ async function getUsersInfo({ username, repository, token, endCursor }) {
     hasNextPage: stargazers.pageInfo.hasNextPage,
     endCursor: stargazers.pageInfo.endCursor,
     stargazers: stargazers.edges.map(({ node: user }) => ({
-      id: user.id,
-      name: user.name,
-      username: user.login,
-      followers: user.followers.totalCount
-    }))
-  }
+      url: user.url,
+      login: user.login,
+      email: user.email,
+      websiteUrl: user.websiteUrl,
+      twitterUsername: user.twitterUsername,
+    })),
+  };
 }
